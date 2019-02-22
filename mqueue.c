@@ -63,24 +63,15 @@ struct mqueuebatch {
     struct mqueue *queues[];
 };
 
-void mqueuebatch_reader_init(struct mqueuebatch_reader *reader, struct mqueuebatch *qs)
-{
-    reader->queueid = 0;
-    reader->queuebatch = qs;
-}
-
-void mqueuebatch_writer_init(struct mqueuebatch_writer *writer, struct mqueuebatch *qs)
-{
-    int seq = atomic_fetch_add(qs->wseq, 1);
-    writer->queue = qs->queues[seq % qs->qnum];
-    writer->queuebatch = qs;
-}
-
+/* nmemb -- number of member 
+   size -- size of member 
+*/
 struct mqueue *mqueue_create(size_t nmemb, size_t size)
 {
     size_t i = 0;
     struct mqueue *q = 0;
 
+    /* add item into every member */
     size = ((size + sizeof(struct item) + 7) / 8) * 8; // 8字节对齐
     q = (struct mqueue*)calloc(1, sizeof(*q) + size * nmemb);
 
@@ -106,37 +97,6 @@ void mqueue_destroy(struct mqueue *q)
     free(q);
 }
 
-void mqueuebatch_destroy(struct mqueuebatch *qs)
-{
-    size_t i = 0;
-    for (i = 0; i < qs->qnum; i++) {
-        if (qs->queues[i])
-            mqueue_destroy(qs->queues[i]);
-    }
-
-    free(qs);
-}
-
-struct mqueuebatch *mqueuebatch_create(size_t nmemb, size_t size)
-{
-    size_t i = 0;
-    size_t qnum = get_cpunum();
-    struct mqueuebatch *qs = (struct mqueuebatch*)calloc(1, sizeof(*qs) + sizeof(struct mqueue *) * qnum);
-    if (qs == NULL)
-        return NULL;
-
-    assert(qnum > 0);
-    nmemb = (nmemb + qnum - 1) / qnum;
-    qs->qnum = qnum;
-    for (i = 0; i < qnum; i++) {
-        if ((qs->queues[i] = mqueue_create(nmemb, size)) == NULL) {
-            mqueuebatch_destroy(qs);
-            return NULL;
-        }
-    }
-
-    return qs;
-}
 
 void *mqueue_writer_parpare(struct mqueue *q)
 {
@@ -166,10 +126,6 @@ void *mqueue_writer_parpare(struct mqueue *q)
     return NULL;
 }
 
-void *mqueuebatch_writer_parpare(struct mqueuebatch_writer *writer)
-{
-    return mqueue_writer_parpare(writer->queue);
-}
 
 void mqueue_writer_commit(struct mqueue *q, void *ptr)
 {
@@ -190,10 +146,6 @@ void mqueue_writer_commit(struct mqueue *q, void *ptr)
     }
 }
 
-void mqueuebatch_writer_commit(struct mqueuebatch_writer *writer, void *ptr)
-{
-    mqueue_writer_commit(writer->queue, ptr);
-}
 
 void *mqueue_reader_next(struct reader_result *res)
 {
@@ -213,10 +165,6 @@ void *mqueue_reader_next(struct reader_result *res)
     return res->curr->content;
 }
 
-void *mqueuebatch_reader_next(struct reader_result *res)
-{
-    return mqueue_reader_next(res);
-}
 
 size_t mqueue_reader_parpare(struct mqueue *q, struct reader_result *ret)
 {
@@ -255,19 +203,6 @@ size_t mqueue_reader_parpare(struct mqueue *q, struct reader_result *ret)
     return n;
 }
 
-size_t mqueuebatch_reader_parpare(struct mqueuebatch_reader *reader, struct reader_result *ret)
-{
-    size_t i = 0, n = 0;
-    size_t qnum = reader->queuebatch->qnum;
-    for (i = 0; i < qnum; i++) {
-        struct mqueue *q = reader->queuebatch->queues[(reader->queueid++) % qnum];
-        n = mqueue_reader_parpare(q, ret);
-        if (n > 0)
-            return n;
-    }
-
-    return 0;
-}
 
 void mqueue_reader_commit(struct mqueue *q, struct reader_result *res)
 {
@@ -292,6 +227,87 @@ void mqueue_reader_commit(struct mqueue *q, struct reader_result *res)
             return;
         cpu_relax();
     }
+}
+
+
+/////////////////////////////////////////////////////////////////
+//      mqueuebatch
+/////////////////////////////////////////////////////////////////
+
+void mqueuebatch_reader_init(struct mqueuebatch_reader *reader, struct mqueuebatch *qs)
+{
+    reader->queueid = 0;
+    reader->queuebatch = qs;
+}
+
+void mqueuebatch_writer_init(struct mqueuebatch_writer *writer, struct mqueuebatch *qs)
+{
+    int seq = atomic_fetch_add(qs->wseq, 1);
+    writer->queue = qs->queues[seq % qs->qnum];
+    writer->queuebatch = qs;
+}
+
+void mqueuebatch_destroy(struct mqueuebatch *qs)
+{
+    size_t i = 0;
+    for (i = 0; i < qs->qnum; i++) {
+        if (qs->queues[i])
+            mqueue_destroy(qs->queues[i]);
+    }
+
+    free(qs);
+}
+
+struct mqueuebatch *mqueuebatch_create(size_t nmemb, size_t size)
+{
+    size_t i = 0;
+    size_t qnum = get_cpunum();
+    struct mqueuebatch *qs = (struct mqueuebatch*)calloc(1, sizeof(*qs) + sizeof(struct mqueue *) * qnum);
+    if (qs == NULL)
+        return NULL;
+
+    assert(qnum > 0);
+    nmemb = (nmemb + qnum - 1) / qnum;
+    qs->qnum = qnum;
+    for (i = 0; i < qnum; i++) {
+        if ((qs->queues[i] = mqueue_create(nmemb, size)) == NULL) {
+            mqueuebatch_destroy(qs);
+            return NULL;
+        }
+    }
+
+    return qs;
+}
+
+
+void *mqueuebatch_writer_parpare(struct mqueuebatch_writer *writer)
+{
+    return mqueue_writer_parpare(writer->queue);
+}
+
+
+void mqueuebatch_writer_commit(struct mqueuebatch_writer *writer, void *ptr)
+{
+    mqueue_writer_commit(writer->queue, ptr);
+}
+
+void *mqueuebatch_reader_next(struct reader_result *res)
+{
+    return mqueue_reader_next(res);
+}
+
+size_t mqueuebatch_reader_parpare(struct mqueuebatch_reader *reader, struct reader_result *ret)
+{
+    size_t i = 0, n = 0;
+    size_t qnum = reader->queuebatch->qnum;
+    for (i = 0; i < qnum; i++) {
+        struct mqueue *q = reader->queuebatch->queues[(reader->queueid++) % qnum];
+        n = mqueue_reader_parpare(q, ret);
+        if (n > 0)
+            return n;
+    }
+
+    return 0;
 }
 
 void mqueuebatch_reader_commit(struct mqueuebatch_reader *reader, struct reader_result *res)
