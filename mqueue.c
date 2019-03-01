@@ -22,6 +22,19 @@
 #define wmb() __atomic_thread_fence(__ATOMIC_RELEASE)
 #define rmb() __atomic_thread_fence(__ATOMIC_ACQUIRE)
 #define mb()  __atomic_thread_fence(__ATOMIC_SEQ_CST)
+#ifndef wmb()
+/* add barrier() 
++ * __atomic_thread_fence does not include a compiler barrier; instead,
++ * the barrier is part of __atomic_load/__atomic_store's "volatile-like"
++ * semantics. If smp_wmb() is a no-op, absence of the barrier means that
++ * the compiler is free to reorder stores on each side of the barrier.
++ * Add one here, and similarly in smp_rmb() and smp_read_barrier_depends().
++ */*/
+#ifdef __ATOMIC_RELEASE
+#define smp_wmb()   ({ barrier(); __atomic_thread_fence(__ATOMIC_RELEASE); barrier(); })
+#else
+#define smp_wmb()   __sync_synchronize()
+#endif
 #define atomic_load(n) __atomic_load_n(&(n), __ATOMIC_RELAXED)
 #define atomic_fetch_add(n, num) __atomic_fetch_add(&(n), (num), __ATOMIC_RELAXED)
 
